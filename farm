@@ -1,6 +1,6 @@
 -- ============================================================
 -- TELEPORT XYZ v21.1 — PARTE 1 de 2 (KAENE EDITION)
--- Loop Infinito + Raio Ampliado | Polícia GCM/PM/PRF | PT+EN
+-- Loop Infinito + Raio Ampliado | PM, PRF, GCM | Hop Same Server (4x)
 -- ============================================================
 
 local Players = game:GetService("Players")
@@ -24,6 +24,10 @@ local HOP_EMPTY_TIME   = 15
 local SCAN_RADIUS      = 200
 local VERIFY_RADIUS    = 350
 local MIN_POLICE       = 5
+
+-- CONTROLE DE TENTATIVAS DE HOP NO MESMO SERVIDOR
+local sameServerHopAttempts = 0
+local MAX_SAME_SERVER_HOPS  = 4
 
 local CASSINO_COORDS = {
     Vector3.new(-1375.3, 141.5, -4041.7),
@@ -137,22 +141,45 @@ local function isPolice(p)
     end
     local srcs = {p:FindFirstChild("Backpack")}
     if p.Character then table.insert(srcs, p.Character) end
+    local function checkStr(s) return wm(s, {"gcm","prf","pm","militar","rodoviaria","guarda"}) end
     for _, src in ipairs(srcs) do
         if src then
             for _, it in ipairs(src:GetChildren()) do
-                if wm(it.Name, PW_TOOL) then return true end
+                if checkStr(it.Name) then return true end
             end
         end
     end
     return false
 end
 
-local function countPolice()
-    local n = 0
+local function checkPoliceValidation()
+    local total = 0
+    local pmCount, prfCount, gcmCount = 0, 0, 0
+    
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= player and isPolice(p) then n = n + 1 end
+        if p ~= player and isPolice(p) then
+            total = total + 1
+            local infoStr = string.lower((p.Team and p.Team.Name or "").." "..(p.Name or "").." "..(p.DisplayName or ""))
+            if infoStr:find("pm") or infoStr:find("militar") then
+                pmCount = pmCount + 1
+            elseif infoStr:find("prf") or infoStr:find("rodoviaria") or infoStr:find("rodoviária") then
+                prfCount = prfCount + 1
+            elseif infoStr:find("gcm") or infoStr:find("guarda") then
+                gcmCount = gcmCount + 1
+            end
+        end
     end
-    return n
+    
+    local hasEnough = false
+    if total >= MIN_POLICE then
+        if (pmCount >= 5 or prfCount >= 5 or gcmCount >= 5) or (pmCount >= 2 and prfCount >= 2 and gcmCount >= 2) then
+            hasEnough = true
+        else
+            if total >= 5 then hasEnough = true end
+        end
+    end
+    
+    return total, hasEnough, pmCount, prfCount, gcmCount
 end
 
 local function isAlive()
@@ -171,7 +198,7 @@ local function bindDeath()
     if not hu then return end
     diedConn = hu.Died:Connect(function()
         died = true
-        if labels.status then labels.status.Text = "MORREU" end
+        if labels.status then labels.status.Text = "MORREU -> HOP" end
     end)
 end
 
@@ -330,6 +357,7 @@ local function coolD(sec)
     if labels.cool then labels.cool.Text = "0s" end
 end
 
+-- LÓGICA DE SERVER HOP COM TENTATIVA NO MESMO SERVIDOR (ATÉ 4 VEZES)
 local function serverHop(reason)
     if labels.status then labels.status.Text = reason.." -> HOP" end
     for i = HOP_DELAY, 1, -1 do
@@ -338,9 +366,33 @@ local function serverHop(reason)
         task.wait(1)
     end
     if stopReq then return end
-    pcall(function() TP:TeleportAsync(game.PlaceId, {player}) end)
-    task.wait(1)
-    pcall(function() TP:Teleport(game.PlaceId, player) end)
+
+    sameServerHopAttempts = sameServerHopAttempts + 1
+    if sameServerHopAttempts <= MAX_SAME_SERVER_HOPS then
+        -- Tenta reentrar no mesmo servidor (até 4 vezes)
+        if labels.status then labels.status.Text = "REENTRANDO ("..sameServerHopAttempts.."/4)" end
+        pcall(function() TP:Teleport(game.PlaceId, player) end)
+        task.wait(2)
+        pcall(function() TP:TeleportAsync(game.PlaceId, {player}) end)
+    else
+        -- Passou de 4 tentativas, muda para um servidor completamente novo
+        if labels.status then labels.status.Text = "BUSCANDO NOVO SERVER" end
+        local HttpService = game:GetService("HttpService")
+        local TPS = game:GetService("TeleportService")
+        local success, servers = pcall(function()
+            return HttpService:JSONDecode(game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?sortOrder=Asc&limit=100"))
+        end)
+        if success and servers and servers.data then
+            for _, s in ipairs(servers.data) do
+                if s.playing < s.maxPlayers and s.id ~= game.JobId then
+                    pcall(function() TPS:TeleportToPlaceInstance(game.PlaceId, s.id, player) end)
+                    task.wait(2)
+                end
+            end
+        end
+        -- Fallback final
+        pcall(function() TP:Teleport(game.PlaceId, player) end)
+    end
 end
 
 GuiService.ErrorMessageChanged:Connect(function(errorMessage)
@@ -348,8 +400,7 @@ GuiService.ErrorMessageChanged:Connect(function(errorMessage)
         task.wait(1)
         serverHop("KICK/ERRO")
     end
-end)
--- ============================================================
+end)-- ============================================================
 -- TELEPORT XYZ v21.1 — PARTE 2 de 2 (KAENE EDITION)
 -- Loop Infinito + Raio Ampliado | Interface & Spawner de Garagem
 -- ============================================================
@@ -429,22 +480,35 @@ local function startAuto()
     local emptyStart = tick()
     while running and not stopReq and not died do
         if not isAlive() then died = true; break end
-        loopCount = loopCount + 1
-        if labels.loopCount then labels.loopCount.Text = tostring(loopCount) end
-        local pol = countPolice()
-        if labels.police then labels.police.Text = tostring(pol).." / "..MIN_POLICE end
-        if pol < MIN_POLICE then
-            if labels.status then
-                labels.status.Text = string.format("POLICE %d/%d -> HOP", pol, MIN_POLICE)
-            end
+        
+        if died then
             running = false
-            serverHop("SEM POLICIA")
+            serverHop("MORREU")
             return
         end
+
+        loopCount = loopCount + 1
+        if labels.loopCount then labels.loopCount.Text = tostring(loopCount) end
+        
+        local totalPol, okPol, pm, prf, gcm = checkPoliceValidation()
+        if labels.police then 
+            labels.police.Text = string.format("PM:%d PRF:%d GCM:%d", pm, prf, gcm) 
+        end
+        
+        if not okPol then
+            if labels.status then
+                labels.status.Text = string.format("POLICIA BAIXA (%d) -> HOP", totalPol)
+            end
+            running = false
+            serverHop("POUCA POLICIA")
+            return
+        end
+
         local c1 = visitLocal(CASSINO_COORDS, "CASSINO")
         if stopReq or died then break end
         local c2 = visitLocal(CENTRAL_COORDS, "CENTRAL")
         if stopReq or died then break end
+        
         if c1 == 0 and c2 == 0 then
             local el = tick() - emptyStart
             if labels.status then
@@ -567,7 +631,7 @@ local function buildUI()
     info.Position = UDim2.new(0, 10, 0, 120)
     info.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
     info.BorderSizePixel = 0
-    info.Text = "PT+EN | Pol<5=HOP | Raio Ampliado"
+    info.Text = "Mesmo Server 4x -> Novo Server"
     info.TextColor3 = Color3.fromRGB(255, 215, 0)
     info.TextSize = 10
     info.Font = Enum.Font.Code
@@ -604,7 +668,7 @@ local function buildUI()
     end
 
     labels.status      = mkRow(160, "STATUS",      "INICIANDO...")
-    labels.police      = mkRow(186, "POLÍCIA",     "0 / "..MIN_POLICE)
+    labels.police      = mkRow(186, "CARGOS",      "PM:0 PRF:0 GCM:0")
     labels.coord       = mkRow(212, "TARGET",      "-")
     labels.promptCount = mkRow(238, "BAGS",        "0")
     labels.prompt      = mkRow(264, "PROMPT",      "-")
@@ -735,4 +799,5 @@ task.spawn(function()
     sgGaragem:Destroy()
 end)
 
-print("[TP-XYZ] v21.1 Kaene Edition (Loop & Raio Ampliado) carregado!")
+print("[TP-XYZ] v21.1 Kaene Edition (Hop Same Server 4x) carregado!")
+
