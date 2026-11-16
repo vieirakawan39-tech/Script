@@ -1,6 +1,6 @@
 -- ============================================================
 -- TELEPORT XYZ v21.1 — PARTE 1 de 2 (KAENE EDITION)
--- Loop Infinito + Raio Ampliado | PM, PRF, GCM | Hop Same Server (4x)
+-- Loop Infinito + Raio Ampliado | PM, PRF, GCM | Hop por Erro
 -- ============================================================
 
 local Players = game:GetService("Players")
@@ -25,9 +25,11 @@ local SCAN_RADIUS      = 200
 local VERIFY_RADIUS    = 350
 local MIN_POLICE       = 5
 
--- CONTROLE DE TENTATIVAS DE HOP NO MESMO SERVIDOR
+-- CONTROLE DE TENTATIVAS E ERROS
 local sameServerHopAttempts = 0
 local MAX_SAME_SERVER_HOPS  = 4
+local consecutivePromptFails = 0
+local MAX_PROMPT_FAILS      = 3 -- Se falhar 3 bolsas seguidas, dá Hop por erro/travamento
 
 local CASSINO_COORDS = {
     Vector3.new(-1375.3, 141.5, -4041.7),
@@ -322,7 +324,11 @@ local function autoHold(prompt)
     local hit = false
     
     while running and not stopReq and not died and prompt and prompt.Parent do
-        local conn = prompt.Triggered:Connect(function() hit = true end)
+        local conn, err = pcall(function()
+            return prompt.Triggered:Connect(function() hit = true end)
+        end)
+        local connection = err -- se der certo, o segundo retorno é o evento
+        
         pcall(function() prompt:InputHoldBegin() end)
         if labels.prompt then labels.prompt.Text = "LOOP HOLD" end
         local start = tick()
@@ -334,7 +340,9 @@ local function autoHold(prompt)
             if not isAlive() then died = true; break end
             if not prompt.Parent then break end
         end
-        if conn then conn:Disconnect() end
+        if typeof(connection) == "RBXScriptConnection" then
+            connection:Disconnect()
+        end
         pcall(function() prompt:InputHoldEnd() end)
         if hit then break end
         task.wait(0.2)
@@ -357,7 +365,6 @@ local function coolD(sec)
     if labels.cool then labels.cool.Text = "0s" end
 end
 
--- LÓGICA DE SERVER HOP COM TENTATIVA NO MESMO SERVIDOR (ATÉ 4 VEZES)
 local function serverHop(reason)
     if labels.status then labels.status.Text = reason.." -> HOP" end
     for i = HOP_DELAY, 1, -1 do
@@ -369,13 +376,11 @@ local function serverHop(reason)
 
     sameServerHopAttempts = sameServerHopAttempts + 1
     if sameServerHopAttempts <= MAX_SAME_SERVER_HOPS then
-        -- Tenta reentrar no mesmo servidor (até 4 vezes)
         if labels.status then labels.status.Text = "REENTRANDO ("..sameServerHopAttempts.."/4)" end
         pcall(function() TP:Teleport(game.PlaceId, player) end)
         task.wait(2)
         pcall(function() TP:TeleportAsync(game.PlaceId, {player}) end)
     else
-        -- Passou de 4 tentativas, muda para um servidor completamente novo
         if labels.status then labels.status.Text = "BUSCANDO NOVO SERVER" end
         local HttpService = game:GetService("HttpService")
         local TPS = game:GetService("TeleportService")
@@ -390,7 +395,6 @@ local function serverHop(reason)
                 end
             end
         end
-        -- Fallback final
         pcall(function() TP:Teleport(game.PlaceId, player) end)
     end
 end
@@ -400,7 +404,8 @@ GuiService.ErrorMessageChanged:Connect(function(errorMessage)
         task.wait(1)
         serverHop("KICK/ERRO")
     end
-end)-- ============================================================
+end)
+-- ============================================================
 -- TELEPORT XYZ v21.1 — PARTE 2 de 2 (KAENE EDITION)
 -- Loop Infinito + Raio Ampliado | Interface & Spawner de Garagem
 -- ============================================================
@@ -448,7 +453,24 @@ local function visitLocal(coordList, locationName)
                 TpFreeze(targetPos)
                 if stopReq or died then break end
                 task.wait(0.1)
-                local hit = autoHold(item.prompt)
+                
+                -- TENTA PEGAR A BOLSA E VERIFICA ERRO
+                local successRun, hit = pcall(function()
+                    return autoHold(item.prompt)
+                end)
+                
+                if not successRun or not hit then
+                    consecutivePromptFails = consecutivePromptFails + 1
+                    if consecutivePromptFails >= MAX_PROMPT_FAILS then
+                        if labels.status then labels.status.Text = "ERRO AO PEGAR -> HOP" end
+                        running = false
+                        serverHop("ERRO BOLSA")
+                        return totalCollected
+                    end
+                else
+                    consecutivePromptFails = 0 -- Resetou se pegou com sucesso
+                end
+
                 if stopReq or died then break end
                 if hit then
                     totalCollected = totalCollected + 1
@@ -505,9 +527,9 @@ local function startAuto()
         end
 
         local c1 = visitLocal(CASSINO_COORDS, "CASSINO")
-        if stopReq or died then break end
+        if stopReq or died or not running then break end
         local c2 = visitLocal(CENTRAL_COORDS, "CENTRAL")
-        if stopReq or died then break end
+        if stopReq or died or not running then break end
         
         if c1 == 0 and c2 == 0 then
             local el = tick() - emptyStart
@@ -631,7 +653,7 @@ local function buildUI()
     info.Position = UDim2.new(0, 10, 0, 120)
     info.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
     info.BorderSizePixel = 0
-    info.Text = "Mesmo Server 4x -> Novo Server"
+    info.Text = "Anti-Erro Bolsa -> Hop Ativo"
     info.TextColor3 = Color3.fromRGB(255, 215, 0)
     info.TextSize = 10
     info.Font = Enum.Font.Code
@@ -799,5 +821,4 @@ task.spawn(function()
     sgGaragem:Destroy()
 end)
 
-print("[TP-XYZ] v21.1 Kaene Edition (Hop Same Server 4x) carregado!")
-
+print("[TP-XYZ] v21.1 Kaene Edition (Anti-Erro & Hop) carregado!")
