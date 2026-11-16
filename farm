@@ -1,0 +1,729 @@
+-- ============================================================
+-- TELEPORT XYZ v21.1 — PARTE 1 de 2 (KAENE EDITION)
+-- Polícia GCM/PM/PRF | Filtro PT+EN | Cassino(17) → Central(22)
+-- ============================================================
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local TP = game:GetService("TeleportService")
+local GuiService = game:GetService("GuiService")
+
+local player = Players.LocalPlayer
+local pg = player:WaitForChild("PlayerGui")
+
+local FREEZE_T         = 0.08
+local FREEZE_SETTLE    = 0.20
+local MIN_HOLD         = 10
+local COOLDOWN         = 10
+local GHOST_ENABLED    = true
+local AUTO_START       = true
+local HOP_DELAY        = 3
+local HOP_EMPTY_TIME   = 15
+local SCAN_RADIUS      = 50
+local VERIFY_RADIUS    = 100
+local MIN_POLICE       = 5
+
+local CASSINO_COORDS = {
+    Vector3.new(-1375.3, 141.5, -4041.7),
+    Vector3.new(-1369.0, 141.5, -4042.9),
+    Vector3.new(-1362.8, 141.5, -4042.8),
+    Vector3.new(-1356.0, 141.5, -4042.4),
+    Vector3.new(-1350.3, 141.5, -4042.7),
+    Vector3.new(-1344.7, 141.5, -4041.7),
+    Vector3.new(-1402.6, 141.5, -4040.7),
+    Vector3.new(-1401.3, 141.5, -4046.8),
+    Vector3.new(-1402.6, 141.5, -4035.6),
+    Vector3.new(-1402.6, 141.5, -4030.6),
+    Vector3.new(-1402.9, 141.5, -4020.0),
+    Vector3.new(-1402.7, 141.5, -4023.1),
+    Vector3.new(-1397.3, 141.5, -3997.6),
+    Vector3.new(-1400.7, 141.5, -3997.9),
+    Vector3.new(-1379.3, 141.5, -3997.3),
+    Vector3.new(-1336.5, 141.5, -3999.2),
+    Vector3.new(-1367.5, 141.5, -3997.4),
+}
+
+local CENTRAL_COORDS = {
+    Vector3.new(-643.4, 108.4, -2684.4),
+    Vector3.new(-639.7, 108.4, -2679.5),
+    Vector3.new(-636.0, 108.4, -2683.2),
+    Vector3.new(-631.6, 108.4, -2679.8),
+    Vector3.new(-628.8, 108.4, -2683.5),
+    Vector3.new(-623.2, 108.4, -2677.1),
+    Vector3.new(-623.7, 108.4, -2671.9),
+    Vector3.new(-627.3, 108.4, -2670.1),
+    Vector3.new(-629.0, 111.3, -2673.3),
+    Vector3.new(-643.7, 108.4, -2670.7),
+    Vector3.new(-643.7, 108.4, -2664.5),
+    Vector3.new(-640.7, 111.5, -2665.5),
+    Vector3.new(-635.2, 108.4, -2664.5),
+    Vector3.new(-638.9, 108.4, -2679.8),
+    Vector3.new(-635.8, 108.4, -2682.7),
+    Vector3.new(-631.9, 108.4, -2679.8),
+    Vector3.new(-628.8, 108.4, -2682.2),
+    Vector3.new(-643.1, 108.4, -2683.0),
+    Vector3.new(-644.5, 108.4, -2670.9),
+    Vector3.new(-644.8, 108.4, -2665.9),
+    Vector3.new(-639.3, 111.3, -2667.3),
+    Vector3.new(-635.3, 108.4, -2666.1),
+}
+
+local running, stopReq, cancelled = false, false, false
+local died = false
+local diedConn
+local labels = {}
+local ghostActive = false
+local savedTransparency = {}
+
+local PW_TEAM = {
+    "police","policia","polícia","policial","cop","officer","sheriff",
+    "swat","guard","guarda","gcm","prf","pm",
+    "guarda civil","guarda municipal","militar","rodoviária","rodoviaria",
+    "bope","rotam","choque","civil","federal"
+}
+local PW_TOOL = {
+    "police","policia","policial","gcm","prf",
+    "fal","fuzil","g3","glock","algema","handcuff","taser",
+    "colete","radio","cassete"
+}
+
+local function wm(s, list)
+    if not s then return false end
+    s = string.lower(s)
+    for _, w in ipairs(list) do
+        if s:find(w, 1, true) then return true end
+    end
+    return false
+end
+
+local function isPolice(p)
+    if not p then return false end
+    if p.Team and wm(p.Team.Name, PW_TEAM) then return true end
+    if p.Team then
+        local tc = p.Team.TeamColor.Color
+        if tc.R < 0.3 and tc.G < 0.55 and tc.B > 0.55 then return true end
+    end
+    if wm(p.Name, PW_TEAM) or wm(p.DisplayName, PW_TEAM) then return true end
+    local ok, attrs = pcall(function() return p:GetAttributes() end)
+    if ok and attrs then
+        for k, v in pairs(attrs) do
+            if wm(k, PW_TEAM) then
+                if typeof(v) == "boolean" and v then return true end
+                if typeof(v) == "number" and v > 0 then return true end
+                if typeof(v) == "string" and wm(v, PW_TEAM) then return true end
+            end
+            if typeof(v) == "string" and wm(v, PW_TEAM) then return true end
+        end
+    end
+    local leaderstats = p:FindFirstChild("leaderstats")
+    if leaderstats then
+        for _, stat in ipairs(leaderstats:GetChildren()) do
+            if wm(stat.Name, PW_TEAM) then return true end
+            if stat:IsA("StringValue") and wm(stat.Value, PW_TEAM) then return true end
+        end
+    end
+    if p.Character then
+        local ok2, cAttrs = pcall(function() return p.Character:GetAttributes() end)
+        if ok2 and cAttrs then
+            for k, v in pairs(cAttrs) do
+                if wm(k, PW_TEAM) then return true end
+                if typeof(v) == "string" and wm(v, PW_TEAM) then return true end
+            end
+        end
+        local hu = p.Character:FindFirstChildOfClass("Humanoid")
+        if hu and wm(hu.DisplayName, PW_TEAM) then return true end
+    end
+    local srcs = {p:FindFirstChild("Backpack")}
+    if p.Character then table.insert(srcs, p.Character) end
+    for _, src in ipairs(srcs) do
+        if src then
+            for _, it in ipairs(src:GetChildren()) do
+                if wm(it.Name, PW_TOOL) then return true end
+            end
+        end
+    end
+    return false
+end
+
+local function countPolice()
+    local n = 0
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= player and isPolice(p) then n = n + 1 end
+    end
+    return n
+end
+
+local function isAlive()
+    local ch = player.Character
+    if not ch then return false end
+    local hrp = ch:FindFirstChild("HumanoidRootPart")
+    local hu = ch:FindFirstChildOfClass("Humanoid")
+    return hrp and hu and hu.Health > 0
+end
+
+local function bindDeath()
+    if diedConn then diedConn:Disconnect(); diedConn = nil end
+    local ch = player.Character
+    if not ch then return end
+    local hu = ch:FindFirstChildOfClass("Humanoid")
+    if not hu then return end
+    diedConn = hu.Died:Connect(function()
+        died = true
+        if labels.status then labels.status.Text = "MORREU" end
+    end)
+end
+
+player.CharacterAdded:Connect(function()
+    task.wait(0.5)
+    if not died then bindDeath() end
+end)
+
+local function startGhost()
+    if not GHOST_ENABLED or ghostActive then return end
+    local char = player.Character
+    if not char then return end
+    ghostActive = true
+    table.clear(savedTransparency)
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+            savedTransparency[part] = part.Transparency
+            part.Transparency = 1
+        elseif part:IsA("Decal") then
+            savedTransparency[part] = part.Transparency
+            part.Transparency = 1
+        end
+    end
+    if labels.ghost then labels.ghost.Text = "ON" end
+end
+
+local function stopGhost()
+    if not ghostActive then return end
+    ghostActive = false
+    for part, t in pairs(savedTransparency) do
+        if part.Parent then
+            pcall(function() part.Transparency = t end)
+        end
+    end
+    table.clear(savedTransparency)
+    if labels.ghost then labels.ghost.Text = "OFF" end
+end
+
+player.CharacterAdded:Connect(function()
+    if ghostActive then task.wait(0.5); startGhost() end
+end)
+
+local function TpFreeze(pos)
+    if not isAlive() then return false end
+    local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    hrp.Anchored = true
+    pcall(function() hrp.AssemblyLinearVelocity  = Vector3.zero end)
+    pcall(function() hrp.AssemblyAngularVelocity = Vector3.zero end)
+    if labels.freeze then labels.freeze.Text = "ON" end
+    task.wait(FREEZE_T)
+    local ok = pcall(function() hrp.CFrame = CFrame.new(pos) end)
+    if not ok then
+        pcall(function() hrp.Anchored = false end)
+        if labels.freeze then labels.freeze.Text = "OFF" end
+        return false
+    end
+    local chegou = false
+    for _ = 1, 30 do
+        task.wait(0.01)
+        if (hrp.Position - pos).Magnitude < 3 then chegou = true; break end
+    end
+    task.wait(FREEZE_SETTLE)
+    pcall(function() hrp.AssemblyLinearVelocity  = Vector3.zero end)
+    pcall(function() hrp.AssemblyAngularVelocity = Vector3.zero end)
+    pcall(function() hrp.Anchored = false end)
+    if labels.freeze then labels.freeze.Text = "OFF" end
+    return chegou
+end
+
+local BAG_KEYWORDS = {
+    "bolsa","sacola","mala","caixa","caixote","baú","bau",
+    "dinheiro","grana","cofre","malote","encomenda","pacote",
+    "cesta","carrinho","loot","saque","recompensa","prêmio","premio",
+    "bag","drop","crate","chest","box","package","parcel",
+    "money","cash","reward","prize","case","container",
+    "briefcase","suitcase","treasure","coin","coins","purse"
+}
+
+local function isBagObject(inst)
+    if not inst then return false end
+    local n = string.lower(inst.Name)
+    for _, w in ipairs(BAG_KEYWORDS) do
+        if n:find(w, 1, true) then return true end
+    end
+    return false
+end
+
+local function findPromptsNear(pos, radius)
+    local list = {}
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if d:IsA("ProximityPrompt") and d.Enabled
+        and d.KeyboardKeyCode == Enum.KeyCode.E then
+            local par = d.Parent
+            local bagFound = false
+            local checkInst = par
+            for _ = 1, 3 do
+                if checkInst and isBagObject(checkInst) then
+                    bagFound = true; break
+                end
+                checkInst = checkInst and checkInst.Parent
+            end
+            if bagFound then
+                local pp
+                if par:IsA("BasePart") then pp = par.Position
+                elseif par:IsA("Attachment") then pp = par.WorldPosition
+                elseif par:IsA("Model") and par.PrimaryPart then pp = par.PrimaryPart.Position end
+                if pp and (pp - pos).Magnitude < radius then
+                    table.insert(list, {prompt = d, pos = pp})
+                end
+            end
+        end
+    end
+    return list
+end
+
+local function autoHold(prompt)
+    if not prompt then return false end
+    local hd = prompt.HoldDuration or 0
+    local totalHold = math.max(hd + 1, MIN_HOLD)
+    local hit = false
+    local conn = prompt.Triggered:Connect(function() hit = true end)
+    pcall(function() prompt:InputHoldBegin() end)
+    if labels.prompt then labels.prompt.Text = "HOLD" end
+    local start = tick()
+    local elapsed = 0
+    while elapsed < totalHold and not stopReq and not died and running do
+        task.wait(0.1)
+        elapsed = tick() - start
+        if labels.cool then labels.cool.Text = math.ceil(totalHold - elapsed).."s" end
+        if not isAlive() then died = true; break end
+        if not prompt.Parent then break end
+    end
+    if conn then conn:Disconnect() end
+    pcall(function() prompt:InputHoldEnd() end)
+    if labels.cool then labels.cool.Text = "0s" end
+    if labels.prompt then labels.prompt.Text = hit and "OK" or "FAIL" end
+    return hit
+end
+
+local function coolD(sec)
+    for i = sec, 1, -1 do
+        if stopReq or not running or died then
+            if labels.cool then labels.cool.Text = "0s" end
+            return
+        end
+        if labels.cool then labels.cool.Text = i.."s" end
+        task.wait(1)
+    end
+    if labels.cool then labels.cool.Text = "0s" end
+end
+
+local function serverHop(reason)
+    if labels.status then labels.status.Text = reason.." -> HOP" end
+    for i = HOP_DELAY, 1, -1 do
+        if stopReq then return end
+        if labels.status then labels.status.Text = reason.." HOP "..i.."s" end
+        task.wait(1)
+    end
+    if stopReq then return end
+    pcall(function() TP:TeleportAsync(game.PlaceId, {player}) end)
+    task.wait(1)
+    pcall(function() TP:Teleport(game.PlaceId, player) end)
+end
+
+GuiService.ErrorMessageChanged:Connect(function(errorMessage)
+    if errorMessage and errorMessage ~= "" then
+        task.wait(1)
+        serverHop("KICK/ERRO")
+    end
+end)
+-- ============================================================
+-- TELEPORT XYZ v21.1 — PARTE 2 de 2 (KAENE EDITION)
+-- ============================================================
+
+local function visitLocal(coordList, locationName)
+    if #coordList == 0 then return 0 end
+    if labels.status then labels.status.Text = "TP "..locationName.." 1/"..#coordList end
+    TpFreeze(coordList[1])
+    if stopReq or died then return 0 end
+    task.wait(0.3)
+    local ch = player.Character
+    local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+    local myPos = hrp and hrp.Position or coordList[1]
+    local checkPrompts = findPromptsNear(myPos, VERIFY_RADIUS)
+    if #checkPrompts == 0 then
+        if labels.status then labels.status.Text = locationName.." VAZIO" end
+        if labels.promptCount then labels.promptCount.Text = "0" end
+        return 0
+    end
+    local totalCollected = 0
+    for idx, coord in ipairs(coordList) do
+        if stopReq or died then break end
+        if not isAlive() then died = true; break end
+        if labels.status then
+            labels.status.Text = string.format("%s %d/%d", locationName, idx, #coordList)
+        end
+        if labels.coord then
+            labels.coord.Text = string.format("%.1f, %.1f, %.1f", coord.X, coord.Y, coord.Z)
+        end
+        TpFreeze(coord)
+        if stopReq or died then break end
+        task.wait(0.15)
+        local ch2 = player.Character
+        local hrp2 = ch2 and ch2:FindFirstChild("HumanoidRootPart")
+        local myPos2 = hrp2 and hrp2.Position or coord
+        local prompts = findPromptsNear(myPos2, SCAN_RADIUS)
+        if #prompts > 0 then
+            if labels.promptCount then labels.promptCount.Text = tostring(#prompts) end
+            for i, item in ipairs(prompts) do
+                if stopReq or died then break end
+                if labels.prompt then
+                    labels.prompt.Text = string.format("%d/%d", i, #prompts)
+                end
+                local targetPos = item.pos + Vector3.new(0, 2, 0)
+                TpFreeze(targetPos)
+                if stopReq or died then break end
+                task.wait(0.1)
+                local hit = autoHold(item.prompt)
+                if stopReq or died then break end
+                if hit then
+                    totalCollected = totalCollected + 1
+                    if labels.collected then
+                        local cur = tonumber(labels.collected.Text) or 0
+                        labels.collected.Text = tostring(cur + 1)
+                    end
+                    if i < #prompts then task.wait(0.3) end
+                end
+            end
+        else
+            if labels.promptCount then labels.promptCount.Text = "0" end
+            if labels.prompt then labels.prompt.Text = "-" end
+        end
+        if totalCollected > 0 then coolD(1) end
+    end
+    return totalCollected
+end
+
+local function startAuto()
+    if running then return end
+    stopReq = false
+    cancelled = false
+    died = false
+    running = true
+    bindDeath()
+    if GHOST_ENABLED then startGhost() end
+    local loopCount = 0
+    local emptyStart = tick()
+    while running and not stopReq and not died do
+        if not isAlive() then died = true; break end
+        loopCount = loopCount + 1
+        if labels.loopCount then labels.loopCount.Text = tostring(loopCount) end
+        local pol = countPolice()
+        if labels.police then labels.police.Text = tostring(pol).." / "..MIN_POLICE end
+        if pol < MIN_POLICE then
+            if labels.status then
+                labels.status.Text = string.format("POLICE %d/%d -> HOP", pol, MIN_POLICE)
+            end
+            running = false
+            serverHop("SEM POLICIA")
+            return
+        end
+        local c1 = visitLocal(CASSINO_COORDS, "CASSINO")
+        if stopReq or died then break end
+        local c2 = visitLocal(CENTRAL_COORDS, "CENTRAL")
+        if stopReq or died then break end
+        if c1 == 0 and c2 == 0 then
+            local el = tick() - emptyStart
+            if labels.status then
+                labels.status.Text = string.format("VAZIO (%ds)", math.floor(el))
+            end
+            if el >= HOP_EMPTY_TIME then
+                running = false
+                serverHop("VAZIO")
+                return
+            end
+            task.wait(1)
+        else
+            emptyStart = tick()
+            if labels.status then
+                labels.status.Text = string.format("CASS=%d CENT=%d", c1, c2)
+            end
+            coolD(COOLDOWN)
+        end
+    end
+    running = false
+    if labels.freeze then labels.freeze.Text = "OFF" end
+    if player.Character then
+        local h = player.Character:FindFirstChild("HumanoidRootPart")
+        if h then pcall(function() h.Anchored = false end) end
+    end
+    if not stopReq then
+        if died then serverHop("MORREU"); return end
+    end
+end
+
+local function stopAuto()
+    stopReq = true
+    cancelled = true
+    running = false
+    stopGhost()
+    if player.Character then
+        local h = player.Character:FindFirstChild("HumanoidRootPart")
+        if h then pcall(function() h.Anchored = false end) end
+    end
+    if labels.status then labels.status.Text = "STOPPED" end
+    if labels.freeze then labels.freeze.Text = "OFF" end
+end
+
+local function buildUI()
+    local old = pg:FindFirstChild("ScreenGui")
+    if old then old:Destroy() end
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "ScreenGui"
+    sg.ResetOnSpawn = false
+    sg.DisplayOrder = 100
+    sg.Parent = pg
+
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(0, 320, 0, 520)
+    f.Position = UDim2.new(0.5, -160, 0, 20)
+    f.BackgroundColor3 = Color3.fromRGB(10, 10, 15)
+    f.BorderSizePixel = 0
+    f.Active = true
+    f.Parent = sg
+    Instance.new("UIStroke", f).Color = Color3.fromRGB(200, 200, 200)
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 30)
+    title.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    title.BorderSizePixel = 0
+    title.Text = "TELEPORT XYZ v21.1 | by kaene"
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.TextSize = 12
+    title.Font = Enum.Font.Code
+    title.Parent = f
+
+    local drg, ds, sp = false, nil, nil
+    title.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1
+        or i.UserInputType == Enum.UserInputType.Touch then
+            drg = true; ds = i.Position; sp = f.Position
+        end
+    end)
+    title.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1
+        or i.UserInputType == Enum.UserInputType.Touch then drg = false end
+    end)
+    UIS.InputChanged:Connect(function(i)
+        if drg and (i.UserInputType == Enum.UserInputType.MouseMovement
+        or i.UserInputType == Enum.UserInputType.Touch) then
+            local d = i.Position - ds
+            f.Position = UDim2.new(sp.X.Scale, sp.X.Offset + d.X, sp.Y.Scale, sp.Y.Offset + d.Y)
+        end
+    end)
+
+    local function mkBtn(text, x, y, w, col, txtcol)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.new(0, w, 0, 34)
+        b.Position = UDim2.new(0, x, 0, y)
+        b.BackgroundColor3 = col
+        b.BorderSizePixel = 0
+        b.Text = text
+        b.TextColor3 = txtcol or Color3.fromRGB(0, 0, 0)
+        b.TextSize = 12
+        b.Font = Enum.Font.Code
+        b.AutoButtonColor = false
+        b.Parent = f
+        return b
+    end
+
+    local tpCassino = mkBtn("[ TP CASSINO ]", 10, 40, 145, Color3.fromRGB(255, 180, 100), Color3.fromRGB(255,255,255))
+    local tpCentral = mkBtn("[ TP CENTRAL ]", 165, 40, 145, Color3.fromRGB(100, 180, 255), Color3.fromRGB(255,255,255))
+    tpCassino.MouseButton1Click:Connect(function()
+        if not running then TpFreeze(CASSINO_COORDS[1]) end
+    end)
+    tpCentral.MouseButton1Click:Connect(function()
+        if not running then TpFreeze(CENTRAL_COORDS[1]) end
+    end)
+
+    local sb = mkBtn("[ INICIAR ]", 10, 80, 145, Color3.fromRGB(240, 240, 240))
+    local pb = mkBtn("[ PARAR ]", 165, 80, 145, Color3.fromRGB(60, 60, 80), Color3.fromRGB(255,255,255))
+
+    local info = Instance.new("TextLabel")
+    info.Size = UDim2.new(1, -20, 0, 30)
+    info.Position = UDim2.new(0, 10, 0, 120)
+    info.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+    info.BorderSizePixel = 0
+    info.Text = "PT+EN | Pol<5=HOP | Anti-Kick ATIVO"
+    info.TextColor3 = Color3.fromRGB(255, 215, 0)
+    info.TextSize = 10
+    info.Font = Enum.Font.Code
+    info.Parent = f
+
+    local function mkRow(y, txt, init)
+        local r = Instance.new("Frame")
+        r.Size = UDim2.new(1, -20, 0, 22)
+        r.Position = UDim2.new(0, 10, 0, y)
+        r.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+        r.BorderSizePixel = 0
+        r.Parent = f
+        local l = Instance.new("TextLabel")
+        l.Size = UDim2.new(0.5, 0, 1, 0)
+        l.Position = UDim2.new(0, 6, 0, 0)
+        l.BackgroundTransparency = 1
+        l.Text = txt
+        l.TextColor3 = Color3.fromRGB(180, 180, 180)
+        l.TextSize = 11
+        l.Font = Enum.Font.Code
+        l.TextXAlignment = Enum.TextXAlignment.Left
+        l.Parent = r
+        local v = Instance.new("TextLabel")
+        v.Size = UDim2.new(0.5, -6, 1, 0)
+        v.Position = UDim2.new(0.5, 0, 0, 0)
+        v.BackgroundTransparency = 1
+        v.Text = init
+        v.TextColor3 = Color3.fromRGB(255, 255, 255)
+        v.TextSize = 11
+        v.Font = Enum.Font.Code
+        v.TextXAlignment = Enum.TextXAlignment.Right
+        v.Parent = r
+        return v
+    end
+
+    labels.status      = mkRow(160, "STATUS",      "INICIANDO...")
+    labels.police      = mkRow(186, "POLÍCIA",     "0 / "..MIN_POLICE)
+    labels.coord       = mkRow(212, "TARGET",      "-")
+    labels.promptCount = mkRow(238, "BAGS",        "0")
+    labels.prompt      = mkRow(264, "PROMPT",      "-")
+    labels.cool        = mkRow(290, "COOLDOWN",    "0s")
+    labels.freeze      = mkRow(316, "FREEZE",      "OFF")
+    labels.ghost       = mkRow(342, "GHOST",       "OFF")
+    labels.loopCount   = mkRow(368, "VOLTAS",      "0")
+    labels.collected   = mkRow(394, "COLETADOS",   "0")
+    labels.antikick    = mkRow(420, "ANTI-KICK",   "ATIVO")
+
+    sb.MouseButton1Click:Connect(function()
+        if not running then
+            stopReq = false
+            cancelled = false
+            died = false
+            task.spawn(startAuto)
+        end
+    end)
+    pb.MouseButton1Click:Connect(stopAuto)
+end
+
+buildUI()
+bindDeath()
+task.spawn(function()
+    task.wait(0.5)
+    if GHOST_ENABLED then startGhost() end
+end)
+if AUTO_START then
+    task.spawn(function()
+        task.wait(1.5)
+        if not running then task.spawn(startAuto) end
+    end)
+end
+
+-- ============================================================
+-- MÓDULO EXTRA: SPAWNER DE GARAGEM "by kaene"
+-- ============================================================
+task.spawn(function()
+    task.wait(0.5)
+    local garagemGui = player:FindFirstChild("PlayerGui")
+    if not garagemGui then return end
+
+    local sgGaragem = Instance.new("ScreenGui")
+    sgGaragem.Name = "SpawnerGaragem"
+    sgGaragem.ResetOnSpawn = false
+    sgGaragem.IgnoreGuiInset = true
+    sgGaragem.DisplayOrder = 999
+    sgGaragem.Parent = garagemGui
+
+    local fundo = Instance.new("Frame")
+    fundo.Size = UDim2.new(1, 0, 1, 0)
+    fundo.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    fundo.BorderSizePixel = 0
+    fundo.Parent = sgGaragem
+
+    local statusGaragem = Instance.new("TextLabel")
+    statusGaragem.Size = UDim2.new(0, 400, 0, 50)
+    statusGaragem.Position = UDim2.new(0.5, -200, 0.5, -25)
+    statusGaragem.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+    statusGaragem.BackgroundTransparency = 0.2
+    statusGaragem.TextColor3 = Color3.fromRGB(255, 255, 255)
+    statusGaragem.TextSize = 20
+    statusGaragem.Font = Enum.Font.Code
+    statusGaragem.Text = "Procurando Garagem..."
+    statusGaragem.Parent = fundo
+
+    local creditLabel = Instance.new("TextLabel")
+    creditLabel.Size = UDim2.new(0, 200, 0, 24)
+    creditLabel.Position = UDim2.new(1, -210, 1, -34)
+    creditLabel.BackgroundTransparency = 1
+    creditLabel.Text = "by kaene"
+    creditLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    creditLabel.TextSize = 14
+    creditLabel.Font = Enum.Font.Code
+    creditLabel.TextXAlignment = Enum.TextXAlignment.Right
+    creditLabel.Parent = fundo
+
+    local function procurarGaragem()
+        for _, obj in ipairs(garagemGui:GetDescendants()) do
+            if obj:IsA("TextLabel") or obj:IsA("TextButton") then
+                local txt = obj.Text or ""
+                if txt:upper():find("GARAGEM") then
+                    local parent = obj.Parent
+                    for i = 1, 8 do
+                        if not parent then break end
+                        for _, child in ipairs(parent:GetDescendants()) do
+                            if child:IsA("TextButton") then
+                                local ct = child.Text or ""
+                                if ct:upper():find("SPAWNAR") and child.Visible then
+                                    return child
+                                end
+                            end
+                        end
+                        parent = parent.Parent
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    statusGaragem.Text = "Procurando botão SPAWNAR..."
+    local limite = os.clock() + 30
+    local botao
+    repeat
+        botao = procurarGaragem()
+        task.wait(0.5)
+    until botao or os.clock() > limite
+
+    if botao then
+        statusGaragem.Text = "Spawnando veículo..."
+        task.wait(0.2)
+        pcall(function() firesignal(botao.MouseButton1Click) end)
+        task.wait(0.5)
+        local vim = game:GetService("VirtualInputManager")
+        pcall(function()
+            vim:SendKeyEvent(true, Enum.KeyCode.Return, false, game)
+            vim:SendKeyEvent(false, Enum.KeyCode.Return, false, game)
+        end)
+        statusGaragem.Text = "Sucesso! by kaene"
+        statusGaragem.TextColor3 = Color3.fromRGB(150, 255, 150)
+    else
+        statusGaragem.Text = "Garagem não encontrada."
+        statusGaragem.TextColor3 = Color3.fromRGB(255, 100, 100)
+    end
+
+    task.wait(2)
+    sgGaragem:Destroy()
+end)
+
+print("[TP-XYZ] v21.1 Kaene Edition carregado com sucesso!")
